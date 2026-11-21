@@ -285,6 +285,5 @@ Distributed under the MIT License. See `LICENSE` for more information.
 ## 👨‍💻 Author & Contact
 
 Developed as an advanced full-stack AI and RAG portfolio project.  
-- **GitHub**: [@your-username](https://github.com/your-username)  
-- **LinkedIn**: [Your Profile](https://linkedin.com/in/your-profile)  
-- **Email**: your.email@example.com
+- **GitHub**: [@developerarhan](https://github.com/developerarhan)   
+- **Email**: khanarhan0205@gmail.com
