@@ -10,109 +10,188 @@ logger = logging.getLogger(__name__)
 
 class GeminiEmbeddings(Embeddings):
     """
-    Lightweight, high-performance Gemini Embedding API client for text-embedding-004.
-    Runs via direct HTTP calls with no PyTorch or heavy C-extensions, keeping
-    memory footprint under ~20MB for Render Free tier deployment.
+    Lightweight Gemini Embedding API client.
+    Uses direct HTTP requests without PyTorch.
     """
+
     def __init__(
         self,
         api_key: str = None,
-        model_name: str = "models/text-embedding-004",
-        timeout: int = 30
+        model_name: str = None,
+        timeout: int = 30,
+        dimensions: int = 768,
     ):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+
         if not self.api_key:
-            logger.error("GEMINI_API_KEY is not configured")
-            raise ValueError("GEMINI_API_KEY environment variable is required for GeminiEmbeddings.")
-        self.model_name = model_name if model_name.startswith("models/") else f"models/{model_name}"
+            raise ValueError("GEMINI_API_KEY is required")
+
+        raw_model = (
+            model_name
+            or os.getenv("GEMINI_EMBEDDING_MODEL")
+            or "models/gemini-embedding-001"
+        )
+        self.model_name = (
+            raw_model if raw_model.startswith("models/")
+            else f"models/{raw_model}"
+        )
+
         self.timeout = timeout
-        self.endpoint_single = f"https://generativelanguage.googleapis.com/v1beta/{self.model_name}:embedContent"
-        self.endpoint_batch = f"https://generativelanguage.googleapis.com/v1beta/{self.model_name}:batchEmbedContents"
-        logger.debug("Initialized GeminiEmbeddings with model %s", self.model_name)
+        self.dimensions = int(os.getenv("GEMINI_EMBEDDING_DIMENSIONS", dimensions))
 
-    def embed_query(self, text: str) -> List[float]:
-        if not text or not str(text).strip():
-            return [0.0] * 768
+        base_url = (
+            "https://generativelanguage.googleapis.com/v1beta/"
+            f"{self.model_name}"
+        )
 
-        payload = {
-            "model": self.model_name,
-            "content": {
-                "parts": [{"text": str(text)}]
-            }
+        self.endpoint_single = f"{base_url}:embedContent"
+        self.endpoint_batch = f"{base_url}:batchEmbedContents"
+
+        self.headers = {
+            "x-goog-api-key": self.api_key,
+            "Content-Type": "application/json",
         }
-        params = {"key": self.api_key}
+
+        self.session = requests.Session()
+
+        logger.info(
+            "Initialized Gemini embeddings: model=%s, dimensions=%s",
+            self.model_name,
+            self.dimensions,
+        )
+
+    def _post(self, endpoint, payload):
+        """HTTP request with retries for transient failures."""
 
         for attempt in range(3):
             try:
-                response = requests.post(
-                    self.endpoint_single,
-                    params=params,
+                response = self.session.post(
+                    endpoint,
+                    headers=self.headers,
                     json=payload,
-                    timeout=self.timeout
+                    timeout=self.timeout,
                 )
-                if response.status_code == 429:
-                    logger.warning("Gemini embedding rate limited (429), retrying in %ss (attempt %s/3)", 1.0 * (attempt + 1), attempt + 1)
-                    time.sleep(1.0 * (attempt + 1))
+
+                # Do not retry permanent errors such as 400 or 404.
+                if response.status_code in (400, 401, 403, 404):
+                    raise RuntimeError(
+                        f"Gemini API HTTP {response.status_code}: "
+                        f"{response.text[:500]}"
+                    )
+
+                if response.status_code == 429 or response.status_code >= 500:
+                    if attempt == 2:
+                        response.raise_for_status()
+
+                    delay = 2 ** attempt
+                    logger.warning(
+                        "Gemini API temporary error %s. Retrying in %ss",
+                        response.status_code,
+                        delay,
+                    )
+                    time.sleep(delay)
                     continue
-                if not response.ok:
-                    logger.warning("Gemini embedContent HTTP %s: %s (attempt %s/3)", response.status_code, response.text[:250], attempt + 1)
+
                 response.raise_for_status()
-                data = response.json()
-                return data["embedding"]["values"]
-            except Exception as e:
-                logger.warning("Gemini embed_query error on attempt %s/3: %s", attempt + 1, e)
+                return response.json()
+
+            except (requests.Timeout, requests.ConnectionError):
                 if attempt == 2:
-                    logger.exception("Gemini embedding API call failed completely after 3 attempts: %s", e)
-                    raise RuntimeError(f"Gemini embedding API call failed: {e}") from e
-                time.sleep(1.0)
-        return [0.0] * 768
+                    raise
+
+                time.sleep(2 ** attempt)
+
+        raise RuntimeError("Gemini API request failed")
+
+    def _embedding_request(self, text, task_type):
+        return {
+            "model": self.model_name,
+            "content": {
+                "parts": [{"text": str(text)}]
+            },
+            "taskType": task_type,
+            "outputDimensionality": self.dimensions,
+        }
+
+    def embed_query(self, text: str) -> List[float]:
+
+        if not text or not str(text).strip():
+            raise ValueError("Cannot embed empty query")
+
+        payload = self._embedding_request(
+            text,
+            "RETRIEVAL_QUERY",
+        )
+
+        data = self._post(self.endpoint_single, payload)
+
+        values = data["embedding"]["values"]
+
+        if len(values) != self.dimensions:
+            raise RuntimeError(
+                f"Unexpected embedding dimensions: {len(values)}"
+            )
+
+        return values
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
+
         if not texts:
             return []
 
+        batch_size = 50
         all_embeddings = []
-        batch_size = 50  # Gemini batch limit is 100
-        logger.info("Generating Gemini embeddings for %s document chunks (batch_size=%s)", len(texts), batch_size)
+
+        logger.info(
+            "Embedding %s documents using batches of %s",
+            len(texts),
+            batch_size,
+        )
 
         for i in range(0, len(texts), batch_size):
+
             chunk = texts[i:i + batch_size]
+
             requests_list = [
-                {
-                    "model": self.model_name,
-                    "content": {"parts": [{"text": str(t)}]}
-                }
-                for t in chunk
+                self._embedding_request(
+                    text,
+                    "RETRIEVAL_DOCUMENT",
+                )
+                for text in chunk
             ]
-            payload = {"requests": requests_list}
-            params = {"key": self.api_key}
 
-            for attempt in range(3):
-                try:
-                    response = requests.post(
-                        self.endpoint_batch,
-                        params=params,
-                        json=payload,
-                        timeout=self.timeout
+            payload = {
+                "requests": requests_list
+            }
+
+            data = self._post(
+                self.endpoint_batch,
+                payload,
+            )
+
+            batch_vectors = [
+                item["values"]
+                for item in data["embeddings"]
+            ]
+
+            if len(batch_vectors) != len(chunk):
+                raise RuntimeError(
+                    "Gemini returned an unexpected number of embeddings"
+                )
+
+            for vector in batch_vectors:
+                if len(vector) != self.dimensions:
+                    raise RuntimeError(
+                        f"Unexpected embedding dimensions: {len(vector)}"
                     )
-                    if response.status_code == 429:
-                        logger.warning("Gemini batch embedding rate limited (429), retrying in %ss (attempt %s/3)", 1.5 * (attempt + 1), attempt + 1)
-                        time.sleep(1.5 * (attempt + 1))
-                        continue
-                    if not response.ok:
-                        logger.warning("Gemini batchEmbedContents HTTP %s: %s (attempt %s/3)", response.status_code, response.text[:250], attempt + 1)
-                    response.raise_for_status()
-                    data = response.json()
-                    batch_vectors = [item["values"] for item in data["embeddings"]]
-                    all_embeddings.extend(batch_vectors)
-                    logger.debug("Successfully embedded batch %s-%s of %s", i, i + len(chunk), len(texts))
-                    break
-                except Exception as e:
-                    logger.warning("Gemini batchEmbedContents error on attempt %s/3: %s", attempt + 1, e)
-                    if attempt == 2:
-                        logger.exception("Gemini batch embedding API call failed completely after 3 attempts: %s", e)
-                        raise RuntimeError(f"Gemini batch embedding API call failed: {e}") from e
-                    time.sleep(1.0)
 
-        logger.info("Finished embedding all %s document chunks", len(texts))
+            all_embeddings.extend(batch_vectors)
+
+            logger.info(
+                "Embedded documents %s-%s of %s",
+                i + 1,
+                i + len(chunk),
+                len(texts),
+            )
+
         return all_embeddings
