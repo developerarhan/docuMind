@@ -178,17 +178,23 @@ class PgVectorStore:
         doc_id, user_id = self._parse_where_filter(filter)
         emb_str = "[" + ",".join(str(float(x)) for x in embedding) + "]"
 
-        params = [emb_str, emb_str]
         conditions = []
+        where_params = []
         if doc_id is not None:
             conditions.append("document_id = %s")
-            params.append(doc_id)
+            where_params.append(doc_id)
         if user_id is not None:
             conditions.append("user_id = %s")
-            params.append(user_id)
+            where_params.append(user_id)
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        params.append(fetch_k)
+
+        # Positional parameter order matching the SQL statement:
+        # 1. SELECT similarity: emb_str
+        # 2. WHERE conditions: where_params (doc_id, user_id)
+        # 3. ORDER BY distance: emb_str
+        # 4. LIMIT: fetch_k
+        params = [emb_str] + where_params + [emb_str, fetch_k]
 
         sql = f"""
             SELECT id, page_content, metadata, embedding::text, (1.0 - (embedding <=> %s::vector)) AS similarity
