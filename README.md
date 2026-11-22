@@ -9,7 +9,7 @@
 [![LangChain](https://img.shields.io/badge/Orchestration-LangChain%20%7C%20LangGraph-1C3C3C?logo=langchain)](https://www.langchain.com/)
 [![pgvector](https://img.shields.io/badge/Vector%20Store-Supabase%20pgvector-3ECF8E?logo=supabase)](https://supabase.com/)
 [![Upstash Redis](https://img.shields.io/badge/Queue-Upstash%20Redis%20TLS-00E599?logo=redis)](https://upstash.com/)
-[![Groq](https://img.shields.io/badge/LLM-Groq%20Llama%203.3%2070B-F55036)](https://groq.com/)
+[![Groq](https://img.shields.io/badge/LLM-Groq%20GPT--OSS%2020B-F55036)](https://groq.com/)
 [![Zero-Cost Hosting](https://img.shields.io/badge/Deployment-100%25%20Free%20Tier-success)](#deployment-architecture)
 
 ---
