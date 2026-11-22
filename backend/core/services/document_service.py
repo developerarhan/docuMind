@@ -1,3 +1,4 @@
+import logging
 from langchain_core.messages import HumanMessage, AIMessage
 
 from ai_engine.rag.retrieval import retrieve_documents
@@ -9,6 +10,8 @@ from ai_engine.citations import validate_source_citations
 from ai_engine.checkpoint import get_checkpointer
 from ai_engine.chains.query_rewriter import rewrite_query
 from core.models import Conversation
+
+logger = logging.getLogger(__name__)
 
 
 def is_document_analysis_query(question: str) -> bool:
@@ -48,6 +51,13 @@ def get_document_context(document, question, user_id=None):
     target_user_id = user_id if user_id is not None else document.user_id
 
     is_analysis = is_document_analysis_query(question)
+    logger.debug(
+        "Retrieving document context: document_id=%s, user_id=%s, is_analysis=%s, question='%s'",
+        document.id,
+        target_user_id,
+        is_analysis,
+        question[:80],
+    )
 
     if is_analysis:
         retrieved_docs, scores = retrieve_documents(
@@ -59,6 +69,7 @@ def get_document_context(document, question, user_id=None):
             threshold=0.20
         )
         if not retrieved_docs:
+            logger.info("Analysis query yielded 0 chunks with threshold=0.20, falling back to top chunks")
             fallback_chunks = get_document_chunks_by_id(
                 vector_store=vector_store,
                 document_id=document.id,
@@ -77,6 +88,7 @@ def get_document_context(document, question, user_id=None):
             user_id=target_user_id
         )
 
+    logger.debug("Retrieved %s chunks for document_id=%s", len(retrieved_docs), document.id)
     return retrieved_docs, scores
 
 def chat_with_document(document, user, question, thread_id, conversation_history=None):

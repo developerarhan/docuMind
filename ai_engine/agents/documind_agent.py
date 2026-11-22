@@ -1,10 +1,13 @@
 import os
+import logging
 import threading
 from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from typing import Any
 from typing_extensions import TypedDict
+
+logger = logging.getLogger(__name__)
 
 from ai_engine.agents.execute_tools import tools
 from ai_engine.middleware.memory_middleware import memory_middleware
@@ -65,6 +68,7 @@ def get_agent():
             if _agent is None:
 
                 groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+                logger.info("Initializing DocuMind agent with model: %s", groq_model)
                 model = ChatGroq(
                     model=groq_model
                 )
@@ -81,6 +85,7 @@ def get_agent():
                         document_context_middleware
                     ]
                 )
+                logger.info("DocuMind agent created successfully")
 
     return _agent
 
@@ -93,6 +98,7 @@ def ask_documind(user, user_input: str, thread_id: str):
         }
     }
 
+    logger.debug("ask_documind invoking for thread_id=%s", thread_id)
     response = agent.invoke(
         {
             "messages": [
@@ -126,15 +132,26 @@ def ask_document_question(
         }
     }
 
-    response = agent.invoke(
-        {
-            "messages": [message]
-        },
-        config=config,
-        context={
-            "user": user,
-            "document_context": context
-        }
+    logger.info(
+        "ask_document_question invoking for thread_id=%s, question='%s', context_len=%s",
+        thread_id,
+        question[:80],
+        len(context),
     )
-
-    return response["messages"][-1].content
+    try:
+        response = agent.invoke(
+            {
+                "messages": [message]
+            },
+            config=config,
+            context={
+                "user": user,
+                "document_context": context
+            }
+        )
+        content = response["messages"][-1].content
+        logger.info("ask_document_question successfully generated answer (length=%s)", len(content))
+        return content
+    except Exception as exc:
+        logger.exception("ask_document_question failed for thread_id=%s: %s", thread_id, exc)
+        raise

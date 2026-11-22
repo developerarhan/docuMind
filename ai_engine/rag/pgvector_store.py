@@ -48,6 +48,14 @@ class PgVectorStore:
         metadatas: List[Dict[str, Any]],
         embeddings: List[List[float]],
     ):
+        doc_id = metadatas[0].get("document_id") if metadatas else "unknown"
+        user_id = metadatas[0].get("user_id") if metadatas else "unknown"
+        logger.info(
+            "Upserting %s chunks to pgvector documind_embeddings (document_id=%s, user_id=%s)",
+            len(ids),
+            doc_id,
+            user_id,
+        )
         with connection.cursor() as cursor:
             for chunk_id, doc_text, meta, emb in zip(ids, documents, metadatas, embeddings):
                 doc_id = meta.get("document_id", 0)
@@ -63,6 +71,7 @@ class PgVectorStore:
                         metadata = EXCLUDED.metadata,
                         embedding = EXCLUDED.embedding;
                 """, [chunk_id, doc_id, user_id, doc_text, meta_json, emb_str])
+        logger.debug("Successfully upserted %s chunks to pgvector", len(ids))
 
     def get(
         self,

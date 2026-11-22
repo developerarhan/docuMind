@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
+# Ensure Python unbuffered stdout/stderr for immediate live Render logging
+export PYTHONUNBUFFERED=1
+
 echo "=== Starting docuMind Deployment Bootstrap ==="
 
 # 1. Run database migrations on Supabase PostgreSQL
@@ -25,10 +28,14 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT
 
-# 4. Start Gunicorn WSGI server in foreground
+# 4. Start Gunicorn WSGI server in foreground (directing access and error logs to stdout/stderr)
 echo "Starting Gunicorn server on port ${PORT:-8000}..."
 exec gunicorn config.wsgi:application \
     --bind 0.0.0.0:${PORT:-8000} \
     --workers 1 \
     --threads 2 \
-    --timeout 120
+    --timeout 120 \
+    --access-logfile - \
+    --error-logfile - \
+    --capture-output \
+    --log-level info

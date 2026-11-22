@@ -25,6 +25,8 @@ from .services.memory_service import get_memories, save_memory
 from .services.document_service import get_document_context, chat_with_document, get_conversation_messages, delete_document
 from ai_engine.checkpoint import get_checkpointer
 
+logger = logging.getLogger(__name__)
+
 
 def serialize_messages(messages):
     serialized = []
@@ -96,11 +98,24 @@ class DocumentUploadView(APIView):
         serializer.is_valid(raise_exception=True)
 
         uploaded_file = serializer.validated_data["file"]
+        logger.info(
+            "User %s uploading document: '%s' (%s bytes, content_type=%s)",
+            request.user.username,
+            uploaded_file.name,
+            uploaded_file.size,
+            getattr(uploaded_file, "content_type", "unknown"),
+        )
 
         document = serializer.save(
             user=request.user,
             file_size=uploaded_file.size,
             status=Document.DocumentStatus.PENDING
+        )
+        logger.info(
+            "Document %s ('%s') created with status PENDING for user %s",
+            document.id,
+            document.title,
+            request.user.username,
         )
 
         response_serializer = DocumentUploadSerializer(document)
@@ -133,7 +148,14 @@ class DocumentDetailView(APIView):
             user=request.user
         )
 
+        logger.info(
+            "User %s deleting document %s ('%s')",
+            request.user.username,
+            document.id,
+            document.title,
+        )
         delete_document(document)
+        logger.info("Document %s and associated resources deleted successfully", id)
 
         return Response(
             status=status.HTTP_204_NO_CONTENT
@@ -168,6 +190,12 @@ class DocumentProcessView(APIView):
                 else:
                     message = "Document cannot be processed in its current state."
 
+                logger.warning(
+                    "User %s attempted to process document %s but invalid status: %s",
+                    request.user.username,
+                    document.id,
+                    document.status,
+                )
                 return Response(
                     {"detail": message},
                     status=status.HTTP_400_BAD_REQUEST
@@ -179,8 +207,10 @@ class DocumentProcessView(APIView):
 
 
         try:
+            logger.info("Dispatching Celery process_document task for document %s", document.id)
             process_document.delay(document.id)
-        except Exception:
+        except Exception as exc:
+            logger.exception("Failed to dispatch Celery task for document %s: %s", document.id, exc)
             document.status = Document.DocumentStatus.FAILED
             document.save(update_fields=["status"])
 
@@ -193,6 +223,7 @@ class DocumentProcessView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE
             )
 
+        logger.info("Celery process_document task dispatched for document %s", document.id)
         return Response(
             {
                 "message": "Document processing started.",
@@ -275,6 +306,13 @@ class DocumentChatView(APIView):
             )
 
         thread_id = str(conversation.id)
+        logger.info(
+            "User %s initiating chat with document %s (thread_id=%s, question='%s')",
+            request.user.username,
+            id,
+            thread_id,
+            question[:80],
+        )
 
         try:
             try:
@@ -289,9 +327,14 @@ class DocumentChatView(APIView):
                 thread_id=thread_id,
                 conversation_history=conversation_history
             )
+            logger.info(
+                "Chat success for document %s (thread_id=%s): generated answer with %s source citation(s)",
+                id,
+                thread_id,
+                len(result.get("sources", [])),
+            )
 
         except Exception as e:
-            logger = logging.getLogger(__name__)
             logger.exception("Failed to chat with document %s (thread %s): %s", id, thread_id, e)
             error_data = {"error": "Failed to generate document answer."}
             if settings.DEBUG:
@@ -309,7 +352,6 @@ class DocumentChatView(APIView):
                 conversation.id
             )
         except Exception as e:
-            logger = logging.getLogger(__name__)
             logger.warning(
                 "Celery dispatch failed for memory extraction: %s. Attempting synchronous extraction fallback.",
                 e
@@ -446,6 +488,7 @@ class RegisterView(APIView):
         serializer = UserRegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        logger.info("New user registered successfully: id=%s, username='%s'", user.id, user.username)
 
         token, _ = Token.objects.get_or_create(user=user)
 
@@ -466,6 +509,7 @@ class LoginView(APIView):
         serializer = UserLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
+        logger.info("User login successful: id=%s, username='%s'", user.id, user.username)
 
         token, _ = Token.objects.get_or_create(user=user)
 
